@@ -27,8 +27,10 @@ import os
 from qgis.PyQt import uic
 from qgis.PyQt import QtWidgets
 
-from qgis.core import QgsVectorLayer, QgsProject, QgsFeature, QgsGeometry, QgsPointXY
+from qgis.core import QgsVectorLayer, QgsProject, QgsFeature, QgsGeometry, QgsPointXY, Qgis, QgsCoordinateReferenceSystem, QgsCoordinateTransform
 from qgis.utils import iface
+
+from math import pi, sin, cos
 
 # This loads your .ui file so that PyQt can populate your plugin with the elements from Qt Designer
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
@@ -49,45 +51,216 @@ class SudutJarakDialog(QtWidgets.QDialog, FORM_CLASS):
         #definisi antar muka
         self.iface = iface
 
+        #mengatur tampilan plugin pertama kali dibuka
+        self.input_az.setEnabled(False)
+        self.input_jarak.setEnabled(False)
+        self.cek_garis.setEnabled(False)
+
+        #berapa kali tombol plot telah diklik
+        self.plot_clicked = 0
+
         # menghubungkan tombol Plot! dengan suatu method
         self.plot.clicked.connect(self.gambar_plot)
+
+        
     
     def gambar_plot(self):
         """ Lakukan sesuatu ketika tombol ditekan """
-        # memanggil isi dari Line Edit pada kolom X dan Y serta
-        # menyimpannya pada variabel self.nilai_x dan self.nilai_y
-        # sekaligus mengkonversinya menjadi angka
         try:
+            #memanggil input sistem koordinat
+            crs = self.sistem_koordinat.crs()
+
+            #cek sistem koordinat yang dipilih
+            self.cek_sistem_koordinat(crs) 
+
+            # memanggil isi dari Line Edit pada kolom X dan Y
+            # sekaligus mengkonversinya menjadi angka
             x = float(self.input_x.text())
             y = float(self.input_y.text())
 
-            # cetak isi nilai X dan y
-            print(x)
-            print(y)
+            #cek input x dan y
+            self.cek_koordinat(x, y, crs)
 
-            #panggil fungsi buat_titik() dengan parameter x dan y
-            self.buat_titik(x, y)
         except Exception as e:
             print(e)
+        
+        else:
+            #nilai self.plot_clicked ditambah setiap tombol plot! ditekan
+            self.plot_clicked += 1
 
+            if self.plot_clicked == 1 :
+                #aksi yang dilakukan apabila tombol plot! pertama kali diklik
+                print(x, y, crs)
 
-    def buat_titik(self, x, y):
+                #panggil fungsi buat_titik() dengan parameter x, y, dan crs
+                self.buat_titik(x, y, crs)  
+
+                #mengatur tampilan plugin setelah dilakukan plot
+                self.input_az.setEnabled(True)
+                self.input_jarak.setEnabled(True)
+                self.cek_garis.setEnabled(True)
+                self.input_x.setEnabled(False)
+                self.input_y.setEnabled(False)
+                self.sistem_koordinat.setEnabled(False)
+                
+            else :
+                
+                # cek nilai input azimuth
+                self.cek_azimuth()
+
+                # cek nilai input jarak
+                self.cek_jarak()
+
+                # memasukkan nilai azimuth ke variabel az dan
+                # memasukkan nilai jarak ke variabel d
+                az = self.cek_azimuth()
+                d = self.cek_jarak()
+
+                # memberikan nilai koordinat awal ke variabel awal
+                awal = QgsGeometry.fromPointXY(QgsPointXY(x, y))
+
+                # menghitung koordinat baru dengan parameter x,y,az, dan d
+                # sekaligus memberikan nilainya ke variabel hasil
+                hasil = self.hitung_koordinat(x, y, az, d)
+
+                # cek apakah perlu untuk membuat garis antar titik
+                if self.cek_garis.isChecked(): 
+                    self.buat_garis(awal, hasil, crs)
+
+                #kosongkan input azimuth dan jarak
+                self.input_az.clear()
+                self.input_jarak.clear()
+
+    
+    def cek_sistem_koordinat(self, crs):
+        try:
+            #mengecek apakah sudah memilih sistem koordinat proyeksi
+            #memberikan peringatan apabila bukan sistem koordinat proyeksi
+            if crs.isGeographic() :
+                iface.messageBar().pushMessage(
+                    "Peringatan","Sistem koordinat yang dipilih bukan sistem koordinat proyeksi", level=Qgis.Warning)
+        
+        except Exception as e:
+            print(e)
+    
+
+    def cek_koordinat(self, x, y, crs):
+        try:
+            # mendapatkan epsg 
+            geog = crs.geographicCrsAuthId()   #geographic crs' epsg
+            proj = crs.authid()   #projected crs' epsg
+
+            #mendapatkan batas sistem proyeksi yang digunakan dalam lat long
+            #kemudian dibuat menjadi sebuah geometri
+            batas = crs.bounds()
+            geom_rec = QgsGeometry.fromRect(batas)
+
+            #transformasi menuju lat long
+            crsSrc = QgsCoordinateReferenceSystem(proj)   
+            crsDest = QgsCoordinateReferenceSystem(geog)  
+            transformContext = QgsProject.instance().transformContext()
+
+            xform = QgsCoordinateTransform(crsSrc, crsDest, transformContext)
+            
+            pt = xform.transform(QgsPointXY(x,y))
+            print("Hasil transformasi:", pt)
+
+            geom_rec.contains(pt)
+
+            #cek apakah koordinat terdapat pada sistem proyeksi
+            # ------------- BAGIAN NAPIK ------------------
+            
+        
+        except Exception as e:
+            print(e)
+        
+    
+    def buat_titik(self, x, y, crs):
         """ buat titik di koordinat masukan """
         # cek masukan
         print(x, y)
+        print(crs.description())
+
+        # sistem koordinat yang digunakan
+        proj = crs.authid()
 
         # membuat layer pada memory
-        # anggap bahwa pengguna hanya di sekitar yogya (zona EPSG:32749)
-        layer = QgsVectorLayer(f"Point?crs=EPSG:32749", "Plot Titik", "memory")
-        QgsProject.instance().addMapLayer(layer)
+        layer_titik = QgsVectorLayer(f"Point?crs="+proj, "Plot Titik", "memory")
+        QgsProject.instance().addMapLayer(layer_titik)
 
         # memberi geometri pada fitur baru
         feature = QgsFeature()
         feature.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(x, y)))
 
         # menambahkan fitur pada layer
-        layer.dataProvider().addFeatures([feature])
-        layer.updateExtents()
+        layer_titik.dataProvider().addFeatures([feature])
+        layer_titik.updateExtents()
 
-        # zoom ke layer\
+        # zoom ke layer
         self.iface.actionZoomToLayer().trigger()
+
+    
+    def cek_azimuth(self):
+        #------------------- BAGIAN AKHYAR ------------------#
+        try :
+            az = float(self.input_az.text())
+        
+        except Exception as e:
+            print(e)    
+
+        else:   
+            return az
+
+
+    def cek_jarak(self):
+        try:
+            #memanggil input jarak
+            jarak = float(self.input_jarak.text())
+
+            #mengecek nilai jarak 
+            assert jarak < 30000, iface.messageBar().pushMessage(
+                "Peringatan","Jarak yang anda masukkan melebihi batas kelengkungan bumi", level=Qgis.Warning,duration=4)
+        
+        except Exception as e:
+            print(e)
+        
+        else:
+            return jarak
+        
+    
+    def hitung_koordinat(self, x, y, az, d):
+        #menghitung beda x dan beda y dari azimuth dan jarak
+        beda_x = d*sin(az*pi/180)
+        beda_y = d*cos(az*pi/180)
+
+        #menghitung x dan y baru
+        x_hitung = x + beda_x
+        y_hitung = y + beda_y
+
+        #membuat geometri titik hitung
+        #sekaligus memberikan ke variabel titik_hitung
+        titik_hitung = QgsGeometry.fromPointXY(QgsPointXY(x_hitung, y_hitung))
+
+        #mengembalikan nilai titik_hitung
+        return titik_hitung
+
+    
+    def buat_garis(self, awal, akhir, crs):
+        # sistem koordinat yang digunakan
+        proj = crs.authid()
+
+        # membuat layer pada memory
+        layer_garis = QgsVectorLayer(f"LineString?crs="+proj, "Plot Garis", "memory")
+        QgsProject.instance().addMapLayer(layer_garis)
+
+        # memberi geometri pada fitur baru
+        feature = QgsFeature()
+        feature.setGeometry(QgsGeometry.fromPolylineXY([awal, akhir]))
+
+        # menambahkan fitur pada layer
+        layer_garis.dataProvider().addFeatures(feature)
+        layer_garis.updateExtents()
+
+        # zoom ke layer
+        self.iface.actionZoomToLayer().trigger()
+            
